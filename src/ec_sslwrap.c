@@ -75,7 +75,7 @@
 #define HAVE_OPENSSL_1_1_0
 #endif
 
-#if (OPENSSL_VERSION_NUMBER >= 0x10101000L) && !defined(LIBRESSL_VERSION_NUMBER)
+#if (OPENSSL_VERSION_NUMBER >= 0x10101000L) && !defined(LIBRESSL_VERSION_NUMBER) && !defined OS_BSD_OPEN
 #define HAVE_OPENSSL_1_1_1
 #endif
 
@@ -414,13 +414,9 @@ static void sslw_hook_handled(struct packet_object *po)
 
       sslw_create_session(&s, PACKET);
 
-#ifndef OS_LINUX
       /* Remember the real destination IP */
       memcpy(s->data, &po->L3.dst, sizeof(struct ip_addr));
       session_put(s);
-#else
-      SAFE_FREE(s); /* Just get rid of it */
-#endif
    } else /* Pass only the SYN for conntrack */
       po->flags |= PO_IGNORE;
 }

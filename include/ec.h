@@ -14,11 +14,6 @@
    #include <windows.h>
 #endif
 
-#if defined OS_DARWIN || defined OS_BSD
-   #define PCAP_DONT_INCLUDE_PCAP_BPF_H 1
-   #include <net/bpf.h>
-#endif
-
 #ifndef PATH_MAX
    #define PATH_MAX  1024
 #endif
@@ -26,12 +21,18 @@
 #if !defined (__USE_GNU)   /* for memmem(), strsignal(), etc etc... */
    #define __USE_GNU
 #endif
+#if !defined (_GNU_SOURCE) /* for memmem(), strsignal(), etc etc... on musl */
+   #define _GNU_SOURCE
+#endif
 #ifdef OS_SOLARIS
    #define _REENTRANT      /* for strtok_r() */
 #endif
 #include <string.h>
 #if defined (__USE_GNU)
    #undef __USE_GNU
+#endif
+#if defined (_GNU_SOURCE)
+   #undef _GNU_SOURCE
 #endif
 #include <strings.h>
 #include <unistd.h>
@@ -51,6 +52,12 @@
    #define EC_API_EXTERN extern
 #endif
 
+/* on MacOSX net/bpf.h must be included before pcap.h in ec_globals.h */
+#ifdef OS_DARWIN
+   #define PCAP_DONT_INCLUDE_PCAP_BPF_H 1
+   #include <net/bpf.h>
+#endif
+
 /* these are often needed... */
 #include <ec_queue.h>
 #include <ec_error.h>
@@ -61,6 +68,12 @@
 
 #ifdef OS_MINGW
    #include <ec_os_mingw.h>
+#endif
+
+/* on BSD net/bpf.h must be included after queue.h in ec_queue.h */
+#ifdef OS_BSD
+   #define PCAP_DONT_INCLUDE_PCAP_BPF_H 1
+   #include <net/bpf.h>
 #endif
 
 

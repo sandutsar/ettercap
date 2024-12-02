@@ -24,6 +24,7 @@
 #include <ec_gtk3.h>
 #include <ec_capture.h>
 #include <ec_version.h>
+#include <ec_geoip.h>
 
 #include <pcap.h>
 #include <string.h>
@@ -431,8 +432,16 @@ void gtkui_about(GSimpleAction *action, GVariant *value, gpointer data)
    label = gtk_label_new("www.ettercap-project.org");
    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
    gtk_box_pack_start(GTK_BOX(vbox), label, TRUE, TRUE, 0);
-   label = gtk_label_new("#ettercap on FreeNode IRC");
+   label = gtk_label_new("#ettercap on Libera.Chat IRC (irc.libera.chat:6697)");
    gtk_box_pack_start(GTK_BOX(vbox), label, TRUE, TRUE, 0);
+#ifdef HAVE_GEOIP
+   if (EC_GBL_CONF->geoip_support_enable) {
+      label = gtk_label_new("This product includes GeoLite2 Data created by MaxMind,");
+      gtk_box_pack_start(GTK_BOX(vbox), label, TRUE, TRUE, 0);
+      label = gtk_label_new("available from https://www.maxmind.com/.");
+      gtk_box_pack_start(GTK_BOX(vbox), label, TRUE, TRUE, 0);
+   }
+#endif
    label = gtk_label_new(" ");
    gtk_box_pack_start(GTK_BOX(vbox), label, TRUE, TRUE, 30);
    gtk_stack_add_titled(GTK_STACK(stack), vbox, "general", "General");
